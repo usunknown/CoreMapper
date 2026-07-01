@@ -1,0 +1,11 @@
+{
+    "models": [
+        {
+            "path": "D:/code/SAM3/best.pt",
+            "classes": ["crack"]
+        }
+    ],
+    "conf_threshold": 0.25,
+    "depth_per_row": 1.0,
+    "row_layout": "snake"
+}
