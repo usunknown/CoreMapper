@@ -365,10 +365,7 @@ class CoreMapperWindow(QMainWindow):
     def _populate_review_table(self, d):
         import glob
         self._rev_dir_cache = d
-        review_files = sorted(
-            glob.glob(os.path.join(d, "*_review.json"))
-            + glob.glob(os.path.join(d, "*_rectified.json"))
-        )
+        review_files = sorted(glob.glob(os.path.join(d, "*_review.json")))
         self.review_table.setRowCount(len(review_files))
         for i, rp in enumerate(review_files):
             base = os.path.basename(rp).replace("_review.json", "")
@@ -400,20 +397,22 @@ class CoreMapperWindow(QMainWindow):
         if not os.path.exists(rp):
             self.signals.log.emit(f"文件不存在: {rp}")
             return
-        # 找到对应的校正图
-        base = fname.replace("_review.json", "")
-        rect = os.path.join(d, base + "_rectified.jpg")
-        if not os.path.exists(rect):
-            rect = os.path.join(d, base + ".jpg")
+        # 打开 _review 后缀的图，labelme 保存时自动生成 _review.json
+        base = fname.replace("_review.json", "").replace("_rectified.json", "")
+        img = os.path.join(d, base + "_review.jpg")
+        if not os.path.exists(img):
+            img = os.path.join(d, base + "_rectified.jpg")
+        if not os.path.exists(img):
+            img = os.path.join(d, base + ".jpg")
         self.signals.log.emit(f"启动 labelme: {base}")
         labelme = sys.executable.replace("python.exe", "Scripts/labelme.exe")
         try:
             if os.path.exists(labelme):
-                subprocess.Popen([labelme, rect])
+                subprocess.Popen([labelme, img])
             else:
-                subprocess.Popen([sys.executable, "-m", "labelme", rect])
+                subprocess.Popen([sys.executable, "-m", "labelme", img])
         except FileNotFoundError:
-            subprocess.Popen([sys.executable, "-m", "labelme", rect])
+            subprocess.Popen([sys.executable, "-m", "labelme", img])
 
     # ---- 建库导出 ----
     def _export_database(self):
