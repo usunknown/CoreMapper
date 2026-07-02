@@ -189,8 +189,8 @@ class CoreMapperWindow(QMainWindow):
         bl.addStretch()
         l.addLayout(bl)
 
-        self.review_table = QTableWidget(0, 4)
-        self.review_table.setHorizontalHeaderLabels(["图片", "检测数", "状态", "审核文件"])
+        self.review_table = QTableWidget(0, 5)
+        self.review_table.setHorizontalHeaderLabels(["图片", "特征类", "检测数", "状态", "审核文件"])
         self.review_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.review_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.review_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -332,9 +332,8 @@ class CoreMapperWindow(QMainWindow):
             self.signals.progress.emit(cur, tot)
             self.signals.log.emit(f"  已处理 {cur}/{tot}")
             return False
-        results = detect_on_directory(d, self.det_models, conf, cb)
-        total_dets = sum(len(v) for v in results.values())
-        self.signals.log.emit(f"识别完成: {len(results)} 张图, {total_dets} 个特征")
+        total_dets = detect_on_directory(d, self.det_models, conf, cb)
+        self.signals.log.emit(f"识别完成: {total_dets} 个特征")
 
     # ---- 审核修正 Tab 方法 ----
     def _review_prepare(self):
@@ -365,26 +364,30 @@ class CoreMapperWindow(QMainWindow):
     def _populate_review_table(self, d):
         import glob
         self._rev_dir_cache = d
-        review_files = sorted(glob.glob(os.path.join(d, "*_review.json")))
+        review_base = os.path.join(d, "review")
+        review_files = sorted(glob.glob(os.path.join(review_base, "*", "*_review.json")))
+        # 向下兼容：旧格式平铺
+        if not review_files:
+            review_files = sorted(glob.glob(os.path.join(d, "*_review.json")))
         self.review_table.setRowCount(len(review_files))
         for i, rp in enumerate(review_files):
             base = os.path.basename(rp).replace("_review.json", "")
-            # 检查是否有对应原图
-            jpg = base + ".jpg" if os.path.exists(os.path.join(d, base + ".jpg")) else (base + ".JPG" if os.path.exists(os.path.join(d, base + ".JPG")) else "")
-            # 读检测数
+            cls_name = os.path.basename(os.path.dirname(rp))
             try:
                 with open(rp, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 n = len(data.get("shapes", []))
-                reviewed = all(s.get("flags", {}).get("reviewed", False) for s in data.get("shapes", []))
-                status = "已审核" if reviewed else "待审核"
+                status = "已审核" if data.get("shapes") and all(
+                    s.get("flags", {}).get("reviewed", False) for s in data["shapes"]
+                ) else "待审核"
             except:
-                n = 0
-                status = "?"
+                n = 0; status = "?"
+                cls_name = "?" if cls_name == "review" else cls_name
             self.review_table.setItem(i, 0, QTableWidgetItem(base))
-            self.review_table.setItem(i, 1, QTableWidgetItem(str(n)))
-            self.review_table.setItem(i, 2, QTableWidgetItem(status))
-            self.review_table.setItem(i, 3, QTableWidgetItem(os.path.basename(rp)))
+            self.review_table.setItem(i, 1, QTableWidgetItem(cls_name))
+            self.review_table.setItem(i, 2, QTableWidgetItem(str(n)))
+            self.review_table.setItem(i, 3, QTableWidgetItem(status))
+            self.review_table.setItem(i, 4, QTableWidgetItem(os.path.basename(rp)))
         self.signals.log.emit(f"表格刷新: {len(review_files)} 个文件")
 
     def _review_open_labelme(self, index):
@@ -392,19 +395,23 @@ class CoreMapperWindow(QMainWindow):
         if not d:
             return
         row = index.row()
-        fname = self.review_table.item(row, 3).text()
-        rp = os.path.join(d, fname)
+        fname = self.review_table.item(row, 4).text()
+        cls_name = self.review_table.item(row, 1).text()
+        base = fname.replace("_review.json", "")
+        # 新格式: review/{class}/
+        review_dir = os.path.join(d, "review", cls_name)
+        rp = os.path.join(review_dir, fname)
+        img = os.path.join(review_dir, base + "_review.jpg")
+        if not os.path.exists(rp):
+            # 向下兼容旧格式
+            rp = os.path.join(d, fname)
+            img = os.path.join(d, base + "_review.jpg")
         if not os.path.exists(rp):
             self.signals.log.emit(f"文件不存在: {rp}")
             return
-        # 打开 _review 后缀的图，labelme 保存时自动生成 _review.json
-        base = fname.replace("_review.json", "").replace("_rectified.json", "")
-        img = os.path.join(d, base + "_review.jpg")
-        if not os.path.exists(img):
-            img = os.path.join(d, base + "_rectified.jpg")
         if not os.path.exists(img):
             img = os.path.join(d, base + ".jpg")
-        self.signals.log.emit(f"启动 labelme: {base}")
+        self.signals.log.emit(f"启动 labelme: {cls_name}/{base}")
         labelme = sys.executable.replace("python.exe", "Scripts/labelme.exe")
         try:
             if os.path.exists(labelme):

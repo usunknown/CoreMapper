@@ -49,20 +49,31 @@ def _fallback_info(directory, base):
 
 def collect_detections(directory, progress_callback=None):
     """
-    扫描目录下所有 _detections.json，汇总为记录列表。
-    每条记录: {hole_id, depth_m, class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-               image_file, center_x, center_y}
+    扫描 detections/*/ 子目录，汇总为记录列表。
     """
-    records = []
-    det_files = sorted([f for f in os.listdir(directory)
-                        if f.endswith("_detections.json")])
+    import glob
 
-    for i, det_file in enumerate(det_files):
-        # 恢复原图文件名
-        base = det_file.replace("_detections.json", "")
+    det_base = os.path.join(directory, "detections")
+    if not os.path.exists(det_base):
+        return []
+
+    records = []
+    # 收集所有 _detections.json
+    det_files = sorted(glob.glob(os.path.join(det_base, "*", "*_detections.json")))
+    if not det_files:
+        # 向下兼容：旧格式（平铺在目录下）
+        det_files = sorted(glob.glob(os.path.join(directory, "*_detections.json")))
+
+    for i, det_path in enumerate(det_files):
+        # 从路径提取 base 名和 class
+        fname = os.path.basename(det_path)
+        cls_name = os.path.basename(os.path.dirname(det_path))
+        if cls_name == "detections":
+            cls_name = "unknown"
+        base = fname.replace("_detections.json", "")
+
         info = parse_filename(base)
         if info is None:
-            # 兜底：从 calib JSON 读取深度信息
             info = _fallback_info(directory, base)
         if info is None:
             continue
@@ -73,7 +84,6 @@ def collect_detections(directory, progress_callback=None):
         if jpg is None:
             continue
 
-        det_path = os.path.join(directory, det_file)
         with open(det_path, "r", encoding="utf-8") as f:
             detections = json.load(f)
 

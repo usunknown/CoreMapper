@@ -120,6 +120,8 @@ def rectify_all(image_dir, progress_callback=None):
     """
     jpgs = sorted([f for f in os.listdir(image_dir)
                    if f.lower().endswith(('.jpg', '.jpeg'))])
+    rect_dir = os.path.join(image_dir, "rectified")
+    os.makedirs(rect_dir, exist_ok=True)
     done, skipped = 0, 0
 
     for jpg in jpgs:
@@ -130,7 +132,8 @@ def rectify_all(image_dir, progress_callback=None):
             continue
         try:
             rect, _, _ = rectify(path, calib)
-            out_path = os.path.splitext(path)[0] + "_rectified.jpg"
+            name = os.path.splitext(jpg)[0]
+            out_path = os.path.join(rect_dir, name + "_rectified.jpg")
             cv2.imwrite(out_path, rect)
             done += 1
         except Exception as e:

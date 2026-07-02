@@ -3,20 +3,19 @@ Module Review: Labelme JSON ↔ detections 双向转换
 """
 import json
 import os
+import shutil
 
 
-def detections_to_labelme(rectified_path, detections, calib_data, output_path=None):
+def detections_to_labelme(rectified_path, detections, output_path=None):
     """
-    检测结果 → Labelme JSON（用于 labelme 人工审核）。
+    检测结果 → Labelme JSON。
     rectified_path: 校正图的完整路径
     detections: [{"class":..., "confidence":..., "bbox":..., "depth":...}, ...]
-    calib_data: 标定 JSON 内容
 
-    矩形框转为 polygon 四个顶点，置信度和深度保存在 shape 的 flags 中。
+    置信度和深度保存在 shape 的 description 字段中（JSON 字符串）。
     """
     import cv2
 
-    # 读取校正图尺寸
     img = cv2.imread(rectified_path)
     if img is None:
         raise FileNotFoundError(f"无法读取图像: {rectified_path}")
@@ -41,8 +40,8 @@ def detections_to_labelme(rectified_path, detections, calib_data, output_path=No
         }
         shapes.append(shape)
 
-    # 审核 JSON 对应的图是 _review.jpg
-    review_jpg = os.path.splitext(os.path.basename(rectified_path))[0].replace("_rectified", "") + "_review.jpg"
+    # imagePath 指向同目录下的 review jpg
+    review_jpg = os.path.basename(rectified_path).replace("_rectified", "_review")
 
     labelme_data = {
         "version": "5.0.1",
@@ -55,25 +54,25 @@ def detections_to_labelme(rectified_path, detections, calib_data, output_path=No
     }
 
     if output_path is None:
-        output_path = os.path.splitext(rectified_path)[0] + "_review.json"
+        output_path = rectified_path.replace("_rectified.jpg", "_review.json")
 
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(labelme_data, f, ensure_ascii=False, indent=2)
 
     return output_path
 
 
-def labelme_to_detections(labelme_path, calib_data=None):
+def labelme_to_detections(labelme_path):
     """
     Labelme JSON → 检测结果列表。
     读取用户审核后的 labelme JSON，提取所有 shape 的外接矩形作为 bbox。
     """
-
     with open(labelme_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     detections = []
-    for i, shape in enumerate(data.get("shapes", [])):
+    for shape in data.get("shapes", []):
         if not shape.get("points"):
             continue
         pts = shape["points"]
@@ -82,7 +81,6 @@ def labelme_to_detections(labelme_path, calib_data=None):
         x1, x2 = min(xs), max(xs)
         y1, y2 = min(ys), max(ys)
 
-        # 从 description 恢复元数据（导出时存入 description）
         meta = {}
         desc = shape.get("description", "")
         if desc:
@@ -104,46 +102,88 @@ def labelme_to_detections(labelme_path, calib_data=None):
     return detections
 
 
-def export_all_for_review(image_dir, progress_callback=None):
-    """目录下所有 _detections.json 批量导出为 _review.json"""
+def export_all_for_review(image_dir, class_name=None, progress_callback=None):
+    """
+    目录下所有 detections/{class}/_detections.json → review/{class}/_review.json + _review.jpg
+    如果 class_name 为 None，处理所有类别。
+    """
     import glob
-    det_files = sorted(glob.glob(os.path.join(image_dir, "*_detections.json")))
+
+    det_base = os.path.join(image_dir, "detections")
+    if not os.path.exists(det_base):
+        return 0
+
+    if class_name:
+        classes = [class_name]
+    else:
+        classes = sorted(
+            d for d in os.listdir(det_base)
+            if os.path.isdir(os.path.join(det_base, d))
+        )
+
     exported = 0
-    for i, det_path in enumerate(det_files):
-        base = os.path.basename(det_path).replace("_detections.json", "")
-        rect_path = os.path.join(image_dir, base + "_rectified.jpg")
-        calib_path = os.path.join(image_dir, base + "_calib.json")
-        if not os.path.exists(rect_path) or not os.path.exists(calib_path):
-            continue
-        with open(det_path, "r", encoding="utf-8") as f:
-            detections = json.load(f)
-        with open(calib_path, "r", encoding="utf-8") as f:
-            calib = json.load(f)
-        output = os.path.join(image_dir, base + "_review.json")
-        detections_to_labelme(rect_path, detections, calib, output)
-        # 复制校正图，带 _review 后缀，labelme 保存时会自动生成 _review.json
-        import shutil
-        review_img = os.path.join(image_dir, base + "_review.jpg")
-        if not os.path.exists(review_img):
-            shutil.copy2(rect_path, review_img)
-        exported += 1
-        if progress_callback:
-            progress_callback(i + 1, len(det_files))
+    for cls in classes:
+        det_dir = os.path.join(det_base, cls)
+        rect_dir = os.path.join(image_dir, "rectified")
+        calib_dir = image_dir
+        review_dir = os.path.join(image_dir, "review", cls)
+        os.makedirs(review_dir, exist_ok=True)
+
+        det_files = sorted(glob.glob(os.path.join(det_dir, "*_detections.json")))
+        for det_path in det_files:
+            base = os.path.basename(det_path).replace("_detections.json", "")
+            rect_path = os.path.join(rect_dir, base + "_rectified.jpg")
+            calib_path = os.path.join(calib_dir, base + "_calib.json")
+            if not os.path.exists(rect_path) or not os.path.exists(calib_path):
+                continue
+            with open(det_path, "r", encoding="utf-8") as f:
+                detections = json.load(f)
+            with open(calib_path, "r", encoding="utf-8") as f:
+                pass  # calib not needed for export
+
+            output = os.path.join(review_dir, base + "_review.json")
+            detections_to_labelme(rect_path, detections, output)
+
+            # 复制校正图带 _review 后缀 → labelme 自动保存 _review.json
+            review_jpg = os.path.join(review_dir, base + "_review.jpg")
+            if not os.path.exists(review_jpg):
+                shutil.copy2(rect_path, review_jpg)
+            exported += 1
+
     return exported
 
 
-def import_all_reviewed(image_dir, progress_callback=None):
-    """目录下所有 _review.json 批量回读，覆盖 _detections.json"""
+def import_all_reviewed(image_dir, class_name=None, progress_callback=None):
+    """
+    review/{class}/_review.json → 覆盖 detections/{class}/_detections.json
+    """
     import glob
-    review_files = sorted(glob.glob(os.path.join(image_dir, "*_review.json")))
+
+    review_base = os.path.join(image_dir, "review")
+    if not os.path.exists(review_base):
+        return 0
+
+    if class_name:
+        classes = [class_name]
+    else:
+        classes = sorted(
+            d for d in os.listdir(review_base)
+            if os.path.isdir(os.path.join(review_base, d))
+        )
+
     imported = 0
-    for i, rv_path in enumerate(review_files):
-        dets = labelme_to_detections(rv_path)
-        base = os.path.basename(rv_path).replace("_review.json", "")
-        det_path = os.path.join(image_dir, base + "_detections.json")
-        with open(det_path, "w", encoding="utf-8") as f:
-            json.dump(dets, f, ensure_ascii=False, indent=2)
-        imported += 1
-        if progress_callback:
-            progress_callback(i + 1, len(review_files))
+    for cls in classes:
+        review_dir = os.path.join(review_base, cls)
+        det_dir = os.path.join(image_dir, "detections", cls)
+        os.makedirs(det_dir, exist_ok=True)
+
+        review_files = sorted(glob.glob(os.path.join(review_dir, "*_review.json")))
+        for rv_path in review_files:
+            dets = labelme_to_detections(rv_path)
+            base = os.path.basename(rv_path).replace("_review.json", "")
+            det_path = os.path.join(det_dir, base + "_detections.json")
+            with open(det_path, "w", encoding="utf-8") as f:
+                json.dump(dets, f, ensure_ascii=False, indent=2)
+            imported += 1
+
     return imported
