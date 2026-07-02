@@ -116,13 +116,23 @@ def export_all_for_review(image_dir, progress_callback=None):
 
 
 def import_all_reviewed(image_dir, progress_callback=None):
-    """目录下所有 _review.json 批量回读，覆盖 _detections.json"""
+    """目录下所有 _review.json + _rectified.json 批量回读，覆盖 _detections.json"""
     import glob
-    review_files = sorted(glob.glob(os.path.join(image_dir, "*_review.json")))
+    review_files = sorted(
+        glob.glob(os.path.join(image_dir, "*_review.json"))
+        + glob.glob(os.path.join(image_dir, "*_rectified.json"))
+    )
     imported = 0
     for i, rv_path in enumerate(review_files):
         dets = labelme_to_detections(rv_path)
-        base = os.path.basename(rv_path).replace("_review.json", "")
+        # 提取 base 名：去掉 _review 或 _rectified 后缀
+        fname = os.path.basename(rv_path)
+        for suffix in ["_review.json", "_rectified.json"]:
+            if fname.endswith(suffix):
+                base = fname[: -len(suffix)]
+                break
+        else:
+            base = os.path.splitext(fname)[0]
         det_path = os.path.join(image_dir, base + "_detections.json")
         with open(det_path, "w", encoding="utf-8") as f:
             json.dump(dets, f, ensure_ascii=False, indent=2)

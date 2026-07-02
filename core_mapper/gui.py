@@ -365,7 +365,10 @@ class CoreMapperWindow(QMainWindow):
     def _populate_review_table(self, d):
         import glob
         self._rev_dir_cache = d
-        review_files = sorted(glob.glob(os.path.join(d, "*_review.json")))
+        review_files = sorted(
+            glob.glob(os.path.join(d, "*_review.json"))
+            + glob.glob(os.path.join(d, "*_rectified.json"))
+        )
         self.review_table.setRowCount(len(review_files))
         for i, rp in enumerate(review_files):
             base = os.path.basename(rp).replace("_review.json", "")
@@ -404,11 +407,13 @@ class CoreMapperWindow(QMainWindow):
             rect = os.path.join(d, base + ".jpg")
         self.signals.log.emit(f"启动 labelme: {base}")
         labelme = sys.executable.replace("python.exe", "Scripts/labelme.exe")
-        if not os.path.exists(labelme):
-            # fallback: python -m labelme
-            subprocess.Popen([sys.executable, "-m", "labelme", rect, "--output", rp])
-        else:
-            subprocess.Popen([labelme, rect, "--output", rp])
+        try:
+            if os.path.exists(labelme):
+                subprocess.Popen([labelme, rect])
+            else:
+                subprocess.Popen([sys.executable, "-m", "labelme", rect])
+        except FileNotFoundError:
+            subprocess.Popen([sys.executable, "-m", "labelme", rect])
 
     # ---- 建库导出 ----
     def _export_database(self):
