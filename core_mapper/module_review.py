@@ -40,13 +40,17 @@ def detections_to_labelme(rectified_path, detections, calib_data, output_path=No
         }
         shapes.append(shape)
 
+    # 审核 JSON 对应的图是 _review.jpg
+    review_jpg = os.path.splitext(os.path.basename(rectified_path))[0].replace("_rectified", "") + "_review.jpg"
+
     labelme_data = {
         "version": "5.0.1",
         "flags": {},
         "shapes": shapes,
-        "imagePath": os.path.basename(rectified_path),
+        "imagePath": review_jpg,
         "imageHeight": h,
         "imageWidth": w,
+        "imageData": None,
     }
 
     if output_path is None:
