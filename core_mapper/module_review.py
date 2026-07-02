@@ -32,11 +32,12 @@ def detections_to_labelme(rectified_path, detections, calib_data, output_path=No
             "points": [[x1, y1], [x2, y2]],
             "group_id": None,
             "shape_type": "rectangle",
-            "flags": {
+            "flags": {},
+            "description": json.dumps({
                 "confidence": det.get("confidence", 0),
                 "depth": det.get("depth", 0),
-                "det_id": i,  # 跟踪原始检测 ID
-            }
+                "det_id": i,
+            }),
         }
         shapes.append(shape)
 
@@ -81,15 +82,22 @@ def labelme_to_detections(labelme_path, calib_data=None):
         x1, x2 = min(xs), max(xs)
         y1, y2 = min(ys), max(ys)
 
-        flags = shape.get("flags", {})
+        # 从 description 恢复元数据（导出时存入 description）
+        meta = {}
+        desc = shape.get("description", "")
+        if desc:
+            try:
+                meta = json.loads(desc)
+            except (json.JSONDecodeError, ValueError):
+                pass
 
         det = {
             "class": shape["label"],
-            "confidence": flags.get("confidence", 1.0),
-            "depth": flags.get("depth", 0),
+            "confidence": meta.get("confidence", 1.0),
+            "depth": meta.get("depth", 0),
             "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
             "center": [round((x1 + x2) / 2, 1), round((y1 + y2) / 2, 1)],
-            "reviewed": True,  # 标记为已审核
+            "reviewed": True,
         }
         detections.append(det)
 
