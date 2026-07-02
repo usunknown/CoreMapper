@@ -150,12 +150,6 @@ class CoreMapperWindow(QMainWindow):
         btn_detect.clicked.connect(self._detect_batch)
         l.addWidget(btn_detect)
 
-        bl2 = QHBoxLayout()
-        self.btn_export_review = QPushButton("导出 Labelme 审核文件")
-        self.btn_export_review.clicked.connect(self._export_review)
-        bl2.addWidget(self.btn_export_review)
-        l.addLayout(bl2)
-
         l.addStretch()
         return w
 
@@ -226,12 +220,6 @@ class CoreMapperWindow(QMainWindow):
         btn_export = QPushButton("导出 CSV + JSON")
         btn_export.clicked.connect(self._export_database)
         l.addWidget(btn_export)
-
-        bl3 = QHBoxLayout()
-        self.btn_import_review = QPushButton("导入 Labelme 审核结果")
-        self.btn_import_review.clicked.connect(self._import_review)
-        bl3.addWidget(self.btn_import_review)
-        l.addLayout(bl3)
 
         l.addStretch()
         return w
@@ -347,38 +335,6 @@ class CoreMapperWindow(QMainWindow):
         results = detect_on_directory(d, self.det_models, conf, cb)
         total_dets = sum(len(v) for v in results.values())
         self.signals.log.emit(f"识别完成: {len(results)} 张图, {total_dets} 个特征")
-
-    # ---- 审核 ----
-    def _export_review(self):
-        d = self.det_dir.text() or self.db_dir.text()
-        if not d:
-            return
-        self._run_worker(self._do_export_review, d)
-
-    def _do_export_review(self, d):
-        from .module_review import export_all_for_review
-        def cb(cur, tot):
-            self.signals.progress.emit(cur, tot)
-            self.signals.log.emit(f"  已导出 {cur}/{tot}")
-            return False
-        n = export_all_for_review(d, cb)
-        self.signals.log.emit(f"审核导出完成: {n} 个 _review.json")
-        self.signals.log.emit(f"用 labelme 打开 _review.json 审核后，到 Tab3 点击导入审核结果")
-
-    def _import_review(self):
-        d = self.db_dir.text() or self.det_dir.text()
-        if not d:
-            return
-        self._run_worker(self._do_import_review, d)
-
-    def _do_import_review(self, d):
-        from .module_review import import_all_reviewed
-        def cb(cur, tot):
-            self.signals.progress.emit(cur, tot)
-            self.signals.log.emit(f"  已导入 {cur}/{tot}")
-            return False
-        n = import_all_reviewed(d, cb)
-        self.signals.log.emit(f"审核导入完成: {n} 张图的检测结果已更新")
 
     # ---- 审核修正 Tab 方法 ----
     def _review_prepare(self):
