@@ -3,6 +3,7 @@ CoreMapper GUI — 三 Tab 界面: 梯形校正 / 特征识别 / 建库导出
 """
 import json
 import os
+import subprocess
 import sys
 import threading
 
@@ -11,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QFileDialog, QProgressBar, QTextEdit,
     QSpinBox, QDoubleSpinBox, QGroupBox, QCheckBox,
-    QTableWidget, QTableWidgetItem, QMessageBox,
+    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView,
 )
 from PySide6.QtCore import Qt, Signal, QObject
 
@@ -49,6 +50,7 @@ class CoreMapperWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_tab_rectify(), "梯形校正")
         self.tabs.addTab(self._build_tab_detect(), "特征识别")
+        self.tabs.addTab(self._build_tab_review(), "审核修正")
         self.tabs.addTab(self._build_tab_database(), "建库导出")
         layout.addWidget(self.tabs)
 
@@ -168,7 +170,45 @@ class CoreMapperWindow(QMainWindow):
         self.model_list.setText("\n".join(lines))
         self._log(f"添加模型: {path} ({classes})")
 
-    # ---- Tab 3: 建库导出 ----
+    # ---- Tab 3: 审核修正 ----
+    def _build_tab_review(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+
+        dg = QGroupBox("图片目录")
+        dl = QHBoxLayout(dg)
+        self.rev_dir = QLineEdit()
+        self.rev_dir.setPlaceholderText("选择包含 _rectified.jpg 和 _detections.json 的目录...")
+        btn_b = QPushButton("浏览")
+        btn_b.clicked.connect(lambda: self._browse_dir(self.rev_dir))
+        dl.addWidget(self.rev_dir, 1)
+        dl.addWidget(btn_b)
+        l.addWidget(dg)
+
+        bl = QHBoxLayout()
+        btn_scan = QPushButton("准备审核文件")
+        btn_scan.clicked.connect(self._review_prepare)
+        self.btn_review_refresh = QPushButton("刷新审核结果")
+        self.btn_review_refresh.clicked.connect(self._review_refresh)
+        bl.addWidget(btn_scan)
+        bl.addWidget(self.btn_review_refresh)
+        bl.addStretch()
+        l.addLayout(bl)
+
+        self.review_table = QTableWidget(0, 4)
+        self.review_table.setHorizontalHeaderLabels(["图片", "检测数", "状态", "审核文件"])
+        self.review_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.review_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.review_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.review_table.doubleClicked.connect(self._review_open_labelme)
+        l.addWidget(self.review_table, 1)
+
+        l.addWidget(QLabel("双击某行 → 自动打开 labelme 审核 → 关闭保存 → 回这里点\"刷新审核结果\""))
+
+        self._rev_dir_cache = None
+        return w
+
+    # ---- Tab 4: 建库导出 ----
     def _build_tab_database(self):
         w = QWidget()
         l = QVBoxLayout(w)
@@ -339,6 +379,76 @@ class CoreMapperWindow(QMainWindow):
             return False
         n = import_all_reviewed(d, cb)
         self.signals.log.emit(f"审核导入完成: {n} 张图的检测结果已更新")
+
+    # ---- 审核修正 Tab 方法 ----
+    def _review_prepare(self):
+        """为目录下所有已检测图生成 _review.json"""
+        d = self.rev_dir.text() or self.det_dir.text()
+        if not d:
+            return
+        self._run_worker(self._do_review_prepare, d)
+
+    def _do_review_prepare(self, d):
+        from .module_review import export_all_for_review
+        n = export_all_for_review(d)
+        self.signals.log.emit(f"已生成 {n} 个 _review.json")
+        self._populate_review_table(d)
+
+    def _review_refresh(self):
+        d = self.rev_dir.text() or self.det_dir.text()
+        if not d:
+            return
+        self._run_worker(self._do_review_refresh, d)
+
+    def _do_review_refresh(self, d):
+        from .module_review import import_all_reviewed
+        n = import_all_reviewed(d)
+        self.signals.log.emit(f"刷新完成: {n} 张图的检测结果已更新（覆盖 _detections.json）")
+        self._populate_review_table(d)
+
+    def _populate_review_table(self, d):
+        import glob
+        self._rev_dir_cache = d
+        review_files = sorted(glob.glob(os.path.join(d, "*_review.json")))
+        self.review_table.setRowCount(len(review_files))
+        for i, rp in enumerate(review_files):
+            base = os.path.basename(rp).replace("_review.json", "")
+            # 检查是否有对应原图
+            jpg = base + ".jpg" if os.path.exists(os.path.join(d, base + ".jpg")) else (base + ".JPG" if os.path.exists(os.path.join(d, base + ".JPG")) else "")
+            # 读检测数
+            try:
+                with open(rp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                n = len(data.get("shapes", []))
+                reviewed = all(s.get("flags", {}).get("reviewed", False) for s in data.get("shapes", []))
+                status = "已审核" if reviewed else "待审核"
+            except:
+                n = 0
+                status = "?"
+            self.review_table.setItem(i, 0, QTableWidgetItem(base))
+            self.review_table.setItem(i, 1, QTableWidgetItem(str(n)))
+            self.review_table.setItem(i, 2, QTableWidgetItem(status))
+            self.review_table.setItem(i, 3, QTableWidgetItem(os.path.basename(rp)))
+        self.signals.log.emit(f"表格刷新: {len(review_files)} 个文件")
+
+    def _review_open_labelme(self, index):
+        d = self._rev_dir_cache or self.rev_dir.text()
+        if not d:
+            return
+        row = index.row()
+        fname = self.review_table.item(row, 3).text()
+        rp = os.path.join(d, fname)
+        if not os.path.exists(rp):
+            self.signals.log.emit(f"文件不存在: {rp}")
+            return
+        # 找到对应的校正图
+        base = fname.replace("_review.json", "")
+        rect = os.path.join(d, base + "_rectified.jpg")
+        if not os.path.exists(rect):
+            rect = os.path.join(d, base + ".jpg")
+        self.signals.log.emit(f"启动 labelme: {base}")
+        subprocess.Popen(["labelme", rect, "--output", rp],
+                         shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # ---- 建库导出 ----
     def _export_database(self):
