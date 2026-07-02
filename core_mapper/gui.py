@@ -403,8 +403,12 @@ class CoreMapperWindow(QMainWindow):
         if not os.path.exists(rect):
             rect = os.path.join(d, base + ".jpg")
         self.signals.log.emit(f"启动 labelme: {base}")
-        cmd = f'labelme "{rect}" --output "{rp}"'
-        subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        labelme = sys.executable.replace("python.exe", "Scripts/labelme.exe")
+        if not os.path.exists(labelme):
+            # fallback: python -m labelme
+            subprocess.Popen([sys.executable, "-m", "labelme", rect, "--output", rp])
+        else:
+            subprocess.Popen([labelme, rect, "--output", rp])
 
     # ---- 建库导出 ----
     def _export_database(self):
