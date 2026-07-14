@@ -142,3 +142,76 @@ def _rect_to_depth(cx, cy, img_w, img_h, calib):
     depth_per_row = (d_end - d_start) / rows
     depth = d_start + (row_idx + col_ratio) * depth_per_row
     return depth
+
+
+# ================================================================
+# TV 图像推理管线
+# ================================================================
+
+def detect_tv_directory(tv_dir, model_configs, conf_threshold=0.25,
+                         progress_callback=None):
+    """
+    TV 图像批量推理：
+    - 从 tv_calib.json 读取有效区域并裁剪
+    - 从文件名解析深度信息
+    - 检测结果写入 tv_dir/detections/{class_name}/{name}_detections.json
+    """
+    if not HAS_YOLO:
+        raise ImportError("unable to import ultralytics: pip install ultralytics")
+
+    from .module_tv_calib import load_tv_calib, crop_tv_image
+    from .module_tv_parse import parse_tv_filename
+
+    calib = load_tv_calib(tv_dir)
+    if calib is None:
+        print(f"TV calibration not found: {tv_dir}/tv_calib.json")
+        return 0
+
+    models = load_models(model_configs)
+
+    jpgs = sorted([
+        f for f in os.listdir(tv_dir)
+        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+        and "_review" not in f
+        and "_mask" not in f
+        and "_annotated" not in f
+    ])
+
+    total_dets = 0
+    for i, fname in enumerate(jpgs):
+        path = os.path.join(tv_dir, fname)
+        info = parse_tv_filename(fname)
+        if info is None:
+            continue
+
+        # 裁剪 + 推理
+        img = crop_tv_image(path, calib)
+        if img is None:
+            continue
+
+        h, w = img.shape[:2]
+        calib_for_detect = {
+            "rows": 1,
+            "depth_start": info["z_top"],
+            "depth_end": info["z_bottom"],
+            "row_layout": "snake",
+        }
+
+        grouped = detect_on_rectified(img, calib_for_detect, models,
+                                      conf_threshold)
+
+        # 按类别分文件保存
+        name = os.path.splitext(fname)[0]
+        for cls_name, dets in grouped.items():
+            det_dir = os.path.join(tv_dir, "detections", cls_name)
+            os.makedirs(det_dir, exist_ok=True)
+            det_path = os.path.join(det_dir, name + "_detections.json")
+            with open(det_path, "w", encoding="utf-8") as f:
+                json.dump(dets, f, ensure_ascii=False, indent=2)
+            total_dets += len(dets)
+
+        if progress_callback:
+            if progress_callback(i + 1, len(jpgs)):
+                break
+
+    return total_dets
