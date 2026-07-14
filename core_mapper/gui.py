@@ -170,12 +170,91 @@ class CoreMapperWindow(QMainWindow):
     # ================================================================
     def _build_tab_tv_calib(self):
         w = QWidget(); l = QVBoxLayout(w)
-        btn_calib = QPushButton("标定 TV 区域（拖矩形→ENTER确认）")
-        btn_calib.clicked.connect(self._tv_calibrate)
-        l.addWidget(btn_calib)
+
+        g1 = QGroupBox("有效电视图区域 (像素坐标)")
+        gl1 = QHBoxLayout(g1)
+        gl1.addWidget(QLabel("X 左:")); self.tv_x0 = QSpinBox(); self.tv_x0.setRange(0, 2000); gl1.addWidget(self.tv_x0)
+        gl1.addWidget(QLabel("X 右:")); self.tv_x1 = QSpinBox(); self.tv_x1.setRange(0, 2000); gl1.addWidget(self.tv_x1)
+        gl1.addWidget(QLabel("Y 上:")); self.tv_y0 = QSpinBox(); self.tv_y0.setRange(0, 10000); gl1.addWidget(self.tv_y0)
+        gl1.addWidget(QLabel("Y 下:")); self.tv_y1 = QSpinBox(); self.tv_y1.setRange(0, 10000); gl1.addWidget(self.tv_y1)
+        l.addWidget(g1)
+
+        bl = QHBoxLayout()
+        btn_save = QPushButton("保存 TV 标定")
+        btn_save.clicked.connect(self._tv_save_calib)
+        bl.addWidget(btn_save)
+        btn_delete = QPushButton("删除已有标定")
+        btn_delete.clicked.connect(self._tv_delete_calib)
+        bl.addWidget(btn_delete)
+        l.addLayout(bl)
+
+        # 自动加载已有标定
         self.tv_calib_status = QLabel("未标定")
         l.addWidget(self.tv_calib_status)
+
+        btn_test = QPushButton("测试标定（显示边界叠加到第一张图）")
+        btn_test.clicked.connect(self._tv_test_calib)
+        l.addWidget(btn_test)
+
+        l.addWidget(QLabel("提示：从已有分析数据可知 CK12 通常为 X=224~575 Y=83~6125"))
         l.addStretch(); return w
+
+    def _tv_refresh_calib_ui(self):
+        d = self.tv_dir.text()
+        if not d: return
+        from .module_tv_calib import load_tv_calib
+        calib = load_tv_calib(d)
+        if calib:
+            self.tv_x0.setValue(calib["x0"]); self.tv_x1.setValue(calib["x1"])
+            self.tv_y0.setValue(calib["y0"]); self.tv_y1.setValue(calib["y1"])
+            self.tv_calib_status.setText(
+                f"已标定: x={calib['x0']}~{calib['x1']} ({calib['x1']-calib['x0']+1}px)  "
+                f"y={calib['y0']}~{calib['y1']} ({calib['y1']-calib['y0']+1}px)")
+        else:
+            self.tv_calib_status.setText("未标定")
+
+    def _tv_save_calib(self):
+        d = self.tv_dir.text()
+        if not d: return
+        from .module_tv_calib import save_tv_calib
+        save_tv_calib(d, self.tv_x0.value(), self.tv_y0.value(),
+                      self.tv_x1.value(), self.tv_y1.value())
+        self._tv_refresh_calib_ui()
+        self._log("TV 标定已保存: tv_calib.json")
+
+    def _tv_delete_calib(self):
+        d = self.tv_dir.text()
+        if not d: return
+        import os
+        path = os.path.join(d, "tv_calib.json")
+        if os.path.exists(path):
+            os.remove(path)
+            self.tv_calib_status.setText("未标定")
+            self._log("TV 标定已删除")
+        else:
+            self._log("无标定文件可删除")
+
+    def _tv_test_calib(self):
+        d = self.tv_dir.text()
+        if not d: return
+        from .module_tv_calib import load_tv_calib, crop_tv_image
+        import cv2
+        calib = load_tv_calib(d)
+        if not calib:
+            self._log("请先保存 TV 标定"); return
+        jpgs = sorted([f for f in os.listdir(d) if f.lower().endswith(('.jpg','.jpeg','.png'))])
+        if not jpgs: return
+        # 在第一张图上画矩形框 + 保存
+        img = cv2.imread(os.path.join(d, jpgs[0]))
+        if img is None: return
+        cv2.rectangle(img, (calib["x0"], calib["y0"]), (calib["x1"], calib["y1"]), (0,255,0), 2)
+        out_path = os.path.join(d, "_tv_calib_check.jpg")
+        cv2.imwrite(out_path, img)
+        self._log(f"边界叠加已保存: {out_path}")
+
+    def _tv_calibrate(self):
+        # 打开 Tab 4 后自动刷新已有标定显示
+        self._tv_refresh_calib_ui()
 
     # ================================================================
     # Tab 5 — TV 特征识别
