@@ -202,29 +202,45 @@ class CoreMapperWindow(QMainWindow):
         l.addStretch(); return w
 
     def _tv_open_labelme_for_calib(self):
-        """打开 labelme 让用户在第一张图上画矩形框住 TV 区域"""
+        """打开 labelme 让用户在第一张图上画矩形框住 TV 区域。
+        只把第一张+最后一张拷贝到临时文件夹，避免 labelme 文件列表混乱。"""
         d = self.tv_dir.text()
         if not d: return
+        import shutil, tempfile
         jpgs = sorted([f for f in os.listdir(d)
                        if f.lower().endswith(('.jpg','.jpeg','.png'))])
         if not jpgs: return
-        path = os.path.join(d, jpgs[0])
-        self._log(f"请在第一张图上用 Create Rectangle 框选 TV 有效区域")
+
+        # 创建临时目录，只放第一张 + 最后一张
+        self._tv_temp_dir = tempfile.mkdtemp(prefix="core_mapper_tv_calib_")
+        first = os.path.join(d, jpgs[0])
+        last = os.path.join(d, jpgs[-1])
+        shutil.copy2(first, os.path.join(self._tv_temp_dir, jpgs[0]))
+        shutil.copy2(last, os.path.join(self._tv_temp_dir, jpgs[-1]))
+        self._log(f"临时文件夹已准备: {self._tv_temp_dir}  请在第一张图上用 Create Rectangle 框选 TV 有效区域（也可检查最后一张），Ctrl+S 后关闭 labelme")
         lm = sys.executable.replace("python.exe", "Scripts/labelme.exe")
         try:
-            if os.path.exists(lm): subprocess.Popen([lm, path])
-            else: subprocess.Popen([sys.executable, "-m", "labelme", path])
+            if os.path.exists(lm): subprocess.Popen([lm, self._tv_temp_dir])
+            else: subprocess.Popen([sys.executable, "-m", "labelme", self._tv_temp_dir])
         except FileNotFoundError:
-            subprocess.Popen([sys.executable, "-m", "labelme", path])
+            subprocess.Popen([sys.executable, "-m", "labelme", self._tv_temp_dir])
 
     def _tv_read_labelme_calib(self):
-        """读取 labelme 保存的 JSON，提取矩形坐标 → tv_calib.json"""
+        """从临时文件夹的 labelme JSON 读取矩形坐标 → tv_calib.json → 清理临时文件夹"""
         d = self.tv_dir.text()
         if not d: return
+        import shutil
+        temp_dir = getattr(self, "_tv_temp_dir", None)
+        if not temp_dir or not os.path.exists(temp_dir):
+            self._log("未找到临时文件夹，请先点\"标定 TV 区域\"")
+            return
+
         jpgs = sorted([f for f in os.listdir(d)
                        if f.lower().endswith(('.jpg','.jpeg','.png'))])
         if not jpgs: return
-        json_path = os.path.join(d, os.path.splitext(jpgs[0])[0] + ".json")
+
+        # labelme 保存的 JSON 在临时文件夹中，取第一张图对应的JSON
+        json_path = os.path.join(temp_dir, os.path.splitext(jpgs[0])[0] + ".json")
         if not os.path.exists(json_path):
             self._log(f"未找到 labelme JSON: {json_path}")
             self._log("请先在 labelme 中画好矩形并 Ctrl+S 保存后关闭")
@@ -232,7 +248,6 @@ class CoreMapperWindow(QMainWindow):
 
         import json as _json
         with open(json_path, encoding="utf-8") as f: data = _json.load(f)
-        # 找第一个矩形标注
         rect = None
         for s in data.get("shapes", []):
             if s.get("shape_type") == "rectangle":
@@ -244,6 +259,14 @@ class CoreMapperWindow(QMainWindow):
                 rect = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
                 break
 
+        # 清理临时文件夹
+        try:
+            shutil.rmtree(temp_dir)
+            self._log(f"已清理临时文件夹")
+        except Exception as e:
+            self._log(f"清理临时文件夹失败: {e}")
+        self._tv_temp_dir = None
+
         if not rect:
             self._log("labelme JSON 中未找到矩形标注")
             return
@@ -254,7 +277,7 @@ class CoreMapperWindow(QMainWindow):
             f"已标定: x={rect['x0']}~{rect['x1']} "
             f"({rect['x1']-rect['x0']+1}px)  "
             f"y={rect['y0']}~{rect['y1']} ({rect['y1']-rect['y0']+1}px)")
-        self._log("TV 标定已从 labelme 矩形标注写入 tv_calib.json")
+        self._log("TV 标定已写入 tv_calib.json")
 
     def _tv_delete_calib(self):
         d = self.tv_dir.text()
