@@ -323,7 +323,7 @@ class CoreMapperWindow(QMainWindow):
         fname = random.choice(pool)
         img_path = os.path.join(d, fname)
         self._log(f"验证标定: {fname}")
-        import cv2
+        img = cv2.imread(img_path)
         if img is None:
             self._log("无法读取图像"); return
         cv2.rectangle(img, (calib["x0"], calib["y0"]),
