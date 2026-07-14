@@ -1,10 +1,12 @@
 """
-CoreMapper GUI — 岩芯 + TV 钻孔照片处理工具
+CoreMapper GUI — 岩芯 + 电视钻孔照片处理工具
 """
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 
 from PySide6.QtWidgets import (
@@ -12,7 +14,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QFileDialog, QProgressBar, QTextEdit,
     QDoubleSpinBox, QGroupBox, QTableWidget, QTableWidgetItem,
-    QMessageBox, QHeaderView, QSpinBox,
+    QMessageBox, QHeaderView,
 )
 from PySide6.QtCore import Qt, Signal, QObject
 
@@ -24,6 +26,14 @@ class WorkerSignals(QObject):
     error = Signal(str)
 
 
+def _tv_sort_key(filename):
+    """按文件名中的 start_cm 数值排序（从小到大）"""
+    m = re.search(r'_(\d+)_(\d+)\.(jpg|JPG|jpeg|png)', filename)
+    if m:
+        return int(m.group(2)) * 1000000 + int(m.group(1))
+    return 0
+
+
 # ================================================================
 # 主窗口
 # ================================================================
@@ -31,16 +41,16 @@ class WorkerSignals(QObject):
 class CoreMapperWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CoreMapper — 岩芯 + TV 照片处理工具")
+        self.setWindowTitle("CoreMapper — 岩芯 + 电视照片处理工具")
         self.resize(950, 700)
         self.signals = WorkerSignals()
         self.signals.log.connect(self._log)
         self.signals.progress.connect(self._progress)
         self.signals.finished.connect(self._on_finished)
         self.signals.error.connect(self._on_error)
-        self._det_models = []   # 岩芯模型
-        self._tv_det_models = []  # TV 模型
-        self._rev_cache = None
+        self._det_models = []        # 岩芯模型
+        self._tv_det_models = []     # 电视模型
+        self._core_rev_cache = None
         self._tv_rev_cache = None
         self._build_ui()
 
@@ -64,7 +74,7 @@ class CoreMapperWindow(QMainWindow):
         cl.addWidget(btn_b1)
 
         cl.addSpacing(12)
-        cl.addWidget(QLabel("TV图像:"))
+        cl.addWidget(QLabel("电视图像:"))
         self.tv_dir = QLineEdit()
         self.tv_dir.setPlaceholderText("钻孔电视图像目录...")
         cl.addWidget(self.tv_dir, 1)
@@ -79,9 +89,9 @@ class CoreMapperWindow(QMainWindow):
         self.tabs.addTab(self._build_tab_rectify(), "岩芯-梯形校正")
         self.tabs.addTab(self._build_tab_core_detect(), "岩芯-特征识别")
         self.tabs.addTab(self._build_tab_core_review(), "岩芯-审核修正")
-        self.tabs.addTab(self._build_tab_tv_calib(), "TV-图像标定")
-        self.tabs.addTab(self._build_tab_tv_detect(), "TV-特征识别")
-        self.tabs.addTab(self._build_tab_tv_review(), "TV-审核修正")
+        self.tabs.addTab(self._build_tab_tv_calib(), "电视-图像标定")
+        self.tabs.addTab(self._build_tab_tv_detect(), "电视-特征识别")
+        self.tabs.addTab(self._build_tab_tv_review(), "电视-审核修正")
         self.tabs.addTab(self._build_tab_database(), "建库导出")
         layout.addWidget(self.tabs)
 
@@ -178,7 +188,7 @@ class CoreMapperWindow(QMainWindow):
             "③ Ctrl+S 保存 → 关闭 labelme → 回到这里点\"从labelme读入标定\""))
 
         bl = QHBoxLayout()
-        btn_open = QPushButton("标定 TV 区域（打开 labelme）")
+        btn_open = QPushButton("标定电视区域（打开 labelme）")
         btn_open.clicked.connect(self._tv_open_labelme_for_calib)
         bl.addWidget(btn_open)
 
@@ -194,7 +204,7 @@ class CoreMapperWindow(QMainWindow):
         self.tv_calib_status = QLabel("未标定")
         l.addWidget(self.tv_calib_status)
 
-        btn_test = QPushButton("验证标定（叠加边界到第一张图）")
+        btn_test = QPushButton("验证标定（叠加到随机一张图上预览）")
         btn_test.clicked.connect(self._tv_test_calib)
         l.addWidget(btn_test)
 
@@ -217,7 +227,8 @@ class CoreMapperWindow(QMainWindow):
         last = os.path.join(d, jpgs[-1])
         shutil.copy2(first, os.path.join(self._tv_temp_dir, jpgs[0]))
         shutil.copy2(last, os.path.join(self._tv_temp_dir, jpgs[-1]))
-        self._log(f"临时文件夹已准备: {self._tv_temp_dir}  请在第一张图上用 Create Rectangle 框选 TV 有效区域（也可检查最后一张），Ctrl+S 后关闭 labelme")
+        self._log(f"临时文件夹（仅 2 张图）: {self._tv_temp_dir}")
+        self._log(f"  首张: {jpgs[0]}    末张: {jpgs[-1]}")
         lm = sys.executable.replace("python.exe", "Scripts/labelme.exe")
         try:
             if os.path.exists(lm): subprocess.Popen([lm, self._tv_temp_dir])
@@ -235,15 +246,17 @@ class CoreMapperWindow(QMainWindow):
             self._log("未找到临时文件夹，请先点\"标定 TV 区域\"")
             return
 
-        jpgs = sorted([f for f in os.listdir(d)
-                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
+        jpgs = sorted(
+            [f for f in os.listdir(d) if f.lower().endswith(('.jpg','.jpeg','.png'))],
+            key=_tv_sort_key,
+        )
         if not jpgs: return
 
         # labelme 保存的 JSON 在临时文件夹中，取第一张图对应的JSON
         json_path = os.path.join(temp_dir, os.path.splitext(jpgs[0])[0] + ".json")
         if not os.path.exists(json_path):
             self._log(f"未找到 labelme JSON: {json_path}")
-            self._log("请先在 labelme 中画好矩形并 Ctrl+S 保存后关闭")
+            self._log("请先在 labelme 中用 Create Rectangle 画框 → Ctrl+S → 关闭 labelme")
             return
 
         import json as _json
@@ -286,7 +299,7 @@ class CoreMapperWindow(QMainWindow):
         if os.path.exists(path):
             os.remove(path)
             self.tv_calib_status.setText("未标定")
-            self._log("TV 标定已删除")
+            self._log("电视标定已删除")
         else:
             self._log("无标定文件可删除")
 
@@ -297,17 +310,27 @@ class CoreMapperWindow(QMainWindow):
         import cv2
         calib = load_tv_calib(d)
         if not calib:
-            self._log("请先完成 TV 标定"); return
-        jpgs = sorted([f for f in os.listdir(d)
-                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
+            self._log("请先完成电视标定"); return
+        jpgs = sorted(
+            [f for f in os.listdir(d) if f.lower().endswith(('.jpg','.jpeg','.png'))],
+            key=_tv_sort_key,
+        )
         if not jpgs: return
-        img = cv2.imread(os.path.join(d, jpgs[0]))
-        if img is None: return
+        import random
+        pool = jpgs[1:-1] if len(jpgs) >= 3 else jpgs[1:]
+        if not pool: pool = jpgs
+        fname = random.choice(pool)
+        img_path = os.path.join(d, fname)
+        self._log(f"验证标定: {fname}")
+        import cv2
+        if img is None:
+            self._log("无法读取图像"); return
         cv2.rectangle(img, (calib["x0"], calib["y0"]),
                       (calib["x1"], calib["y1"]), (0, 255, 0), 2)
-        out_path = os.path.join(d, "_tv_calib_check.jpg")
-        cv2.imwrite(out_path, img)
-        self._log(f"边界叠加已保存: {out_path}")
+        tmp_out = os.path.join(tempfile.gettempdir(), "_core_mapper_tv_check.jpg")
+        cv2.imwrite(tmp_out, img)
+        os.startfile(tmp_out)
+        self._log(f"验证图已弹出显示（{fname}），关闭查看器后可删除 {tmp_out}")
 
     # ================================================================
     # Tab 5 — TV 特征识别
@@ -315,13 +338,13 @@ class CoreMapperWindow(QMainWindow):
     def _build_tab_tv_detect(self):
         w = QWidget(); l = QVBoxLayout(w)
         ml = QHBoxLayout()
-        ml.addWidget(QLabel("TV模型:"))
+        ml.addWidget(QLabel("电视模型:"))
         self.tv_model_path = QLineEdit("D:/code/SAM3/best.pt")
         ml.addWidget(self.tv_model_path, 2)
         ml.addWidget(QLabel("类别:"))
         self.tv_classes = QLineEdit("fracture")
         ml.addWidget(self.tv_classes, 1)
-        btn_m = QPushButton("添加TV模型")
+        btn_m = QPushButton("添加电视模型")
         btn_m.clicked.connect(self._tv_add_model)
         ml.addWidget(btn_m); l.addLayout(ml)
 
@@ -334,7 +357,7 @@ class CoreMapperWindow(QMainWindow):
         self.tv_conf.setValue(0.25); self.tv_conf.setSingleStep(0.05)
         fl.addWidget(self.tv_conf); fl.addStretch(); l.addLayout(fl)
 
-        btn_d = QPushButton("批量推理（TV）"); btn_d.clicked.connect(self._tv_detect)
+        btn_d = QPushButton("批量推理（电视）"); btn_d.clicked.connect(self._tv_detect)
         l.addWidget(btn_d); l.addStretch(); return w
 
     def _tv_add_model(self):
@@ -350,9 +373,9 @@ class CoreMapperWindow(QMainWindow):
     def _build_tab_tv_review(self):
         w = QWidget(); l = QVBoxLayout(w)
         bl = QHBoxLayout()
-        btn_s = QPushButton("准备TV审核文件")
+        btn_s = QPushButton("准备电视审核文件")
         btn_s.clicked.connect(self._tv_review_prepare)
-        btn_f = QPushButton("刷新TV审核结果")
+        btn_f = QPushButton("刷新电视审核结果")
         btn_f.clicked.connect(self._tv_review_refresh)
         bl.addWidget(btn_s); bl.addWidget(btn_f); bl.addStretch(); l.addLayout(bl)
         self.tv_rev_table = QTableWidget(0, 5)
@@ -369,7 +392,7 @@ class CoreMapperWindow(QMainWindow):
     # ================================================================
     def _build_tab_database(self):
         w = QWidget(); l = QVBoxLayout(w)
-        btn = QPushButton("导出 CSV + JSON（含岩芯+TV）")
+        btn = QPushButton("导出 CSV + JSON（含岩芯+电视）")
         btn.clicked.connect(self._export_database)
         l.addWidget(btn); l.addStretch(); return w
 
@@ -535,9 +558,9 @@ class CoreMapperWindow(QMainWindow):
             self.tv_calib_status.setText(
                 f"已标定: x={result['x0']}~{result['x1']} ({result['width']}px)  "
                 f"y={result['y0']}~{result['y1']} ({result['height']}px)")
-            self._log(f"TV 标定已保存: tv_calib.json")
+            self._log(f"电视标定已保存: tv_calib.json")
         else:
-            self._log("TV 标定已取消")
+            self._log("电视标定已取消")
 
     # ================================================================
     # TV 推理
@@ -551,7 +574,7 @@ class CoreMapperWindow(QMainWindow):
         from .module_detect import detect_tv_directory
         def cb(cur, tot): self.signals.progress.emit(cur, tot); return False
         n = detect_tv_directory(d, self._tv_det_models, conf, cb)
-        self.signals.log.emit(f"TV 识别完成: {n} 个特征")
+        self.signals.log.emit(f"电视识别完成: {n} 个特征")
 
     # ================================================================
     # 建库导出
@@ -574,11 +597,11 @@ class CoreMapperWindow(QMainWindow):
             self.signals.log.emit(f"  岩芯: {len(cr)} 条记录")
 
         if tv_d:
-            self.signals.log.emit("收集 TV 检测结果...")
+            self.signals.log.emit("收集电视检测结果...")
             tr = collect_detections(tv_d)
-            for r in tr: r["source"] = "tv"
+            for r in tr: r["source"] = "电视"
             all_records.extend(tr)
-            self.signals.log.emit(f"  TV: {len(tr)} 条记录")
+            self.signals.log.emit(f"  电视: {len(tr)} 条记录")
 
         # 统一输出到岩芯目录；如果岩芯目录为空则输出到 TV 目录
         out_dir = core_d or tv_d
