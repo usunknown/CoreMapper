@@ -27,11 +27,11 @@ class WorkerSignals(QObject):
 
 
 def _tv_sort_key(filename):
-    """按文件名中的 start_cm 数值排序（从小到大）"""
-    m = re.search(r'_(\d+)_(\d+)\.(jpg|JPG|jpeg|png)', filename)
+    """按文件名末尾的 start_cm 数值排序（从小到大）。不匹配则排到最前。"""
+    m = re.search(r'_(\d+)_(\d+)\.(jpg|JPG|jpeg|png)$', filename)
     if m:
-        return int(m.group(2)) * 1000000 + int(m.group(1))
-    return 0
+        return int(m.group(2))
+    return -1
 
 
 # ================================================================
@@ -216,13 +216,14 @@ class CoreMapperWindow(QMainWindow):
         只把第一张+最后一张拷贝到临时文件夹，避免 labelme 文件列表混乱。"""
         d = self.tv_dir.text()
         if not d: return
-        import shutil, tempfile
-        jpgs = sorted([f for f in os.listdir(d)
-                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
+        import shutil
+        jpgs = sorted(
+            [f for f in os.listdir(d) if f.lower().endswith(('.jpg','.jpeg','.png'))],
+            key=_tv_sort_key,
+        )
         if not jpgs: return
 
-        # 创建临时目录，只放第一张 + 最后一张
-        self._tv_temp_dir = tempfile.mkdtemp(prefix="core_mapper_tv_calib_")
+        self._tv_temp_dir = tempfile.mkdtemp(prefix="core_mapper_tv_")
         first = os.path.join(d, jpgs[0])
         last = os.path.join(d, jpgs[-1])
         shutil.copy2(first, os.path.join(self._tv_temp_dir, jpgs[0]))
