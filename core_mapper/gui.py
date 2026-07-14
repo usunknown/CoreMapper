@@ -166,66 +166,99 @@ class CoreMapperWindow(QMainWindow):
         return w
 
     # ================================================================
-    # Tab 4 — TV 图像标定
+    # Tab 4 — TV 图像标定（用 labelme 画矩形）
     # ================================================================
     def _build_tab_tv_calib(self):
         w = QWidget(); l = QVBoxLayout(w)
 
-        g1 = QGroupBox("有效电视图区域 (像素坐标)")
-        gl1 = QHBoxLayout(g1)
-        gl1.addWidget(QLabel("X 左:")); self.tv_x0 = QSpinBox(); self.tv_x0.setRange(0, 2000); gl1.addWidget(self.tv_x0)
-        gl1.addWidget(QLabel("X 右:")); self.tv_x1 = QSpinBox(); self.tv_x1.setRange(0, 2000); gl1.addWidget(self.tv_x1)
-        gl1.addWidget(QLabel("Y 上:")); self.tv_y0 = QSpinBox(); self.tv_y0.setRange(0, 10000); gl1.addWidget(self.tv_y0)
-        gl1.addWidget(QLabel("Y 下:")); self.tv_y1 = QSpinBox(); self.tv_y1.setRange(0, 10000); gl1.addWidget(self.tv_y1)
-        l.addWidget(g1)
+        l.addWidget(QLabel(
+            "① 点\"标定TV区域\"→labelme打开第一张图\n"
+            "② 用 Create Rectangle 画一个框覆盖有效电视图部分\n"
+            "  （排除左刻度尺+顶部方位标+底部留白）\n"
+            "③ Ctrl+S 保存 → 关闭 labelme → 回到这里点\"从labelme读入标定\""))
 
         bl = QHBoxLayout()
-        btn_save = QPushButton("保存 TV 标定")
-        btn_save.clicked.connect(self._tv_save_calib)
-        bl.addWidget(btn_save)
+        btn_open = QPushButton("标定 TV 区域（打开 labelme）")
+        btn_open.clicked.connect(self._tv_open_labelme_for_calib)
+        bl.addWidget(btn_open)
+
+        btn_read = QPushButton("从 labelme 读入标定")
+        btn_read.clicked.connect(self._tv_read_labelme_calib)
+        bl.addWidget(btn_read)
+
         btn_delete = QPushButton("删除已有标定")
         btn_delete.clicked.connect(self._tv_delete_calib)
         bl.addWidget(btn_delete)
         l.addLayout(bl)
 
-        # 自动加载已有标定
         self.tv_calib_status = QLabel("未标定")
         l.addWidget(self.tv_calib_status)
 
-        btn_test = QPushButton("测试标定（显示边界叠加到第一张图）")
+        btn_test = QPushButton("验证标定（叠加边界到第一张图）")
         btn_test.clicked.connect(self._tv_test_calib)
         l.addWidget(btn_test)
 
-        l.addWidget(QLabel("提示：从已有分析数据可知 CK12 通常为 X=224~575 Y=83~6125"))
+        l.addWidget(QLabel("提示：CK12 通常取 X=224~575 Y=83~6125；CK11 取 X=224~945 Y=83~6127"))
         l.addStretch(); return w
 
-    def _tv_refresh_calib_ui(self):
+    def _tv_open_labelme_for_calib(self):
+        """打开 labelme 让用户在第一张图上画矩形框住 TV 区域"""
         d = self.tv_dir.text()
         if not d: return
-        from .module_tv_calib import load_tv_calib
-        calib = load_tv_calib(d)
-        if calib:
-            self.tv_x0.setValue(calib["x0"]); self.tv_x1.setValue(calib["x1"])
-            self.tv_y0.setValue(calib["y0"]); self.tv_y1.setValue(calib["y1"])
-            self.tv_calib_status.setText(
-                f"已标定: x={calib['x0']}~{calib['x1']} ({calib['x1']-calib['x0']+1}px)  "
-                f"y={calib['y0']}~{calib['y1']} ({calib['y1']-calib['y0']+1}px)")
-        else:
-            self.tv_calib_status.setText("未标定")
+        jpgs = sorted([f for f in os.listdir(d)
+                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
+        if not jpgs: return
+        path = os.path.join(d, jpgs[0])
+        self._log(f"请在第一张图上用 Create Rectangle 框选 TV 有效区域")
+        lm = sys.executable.replace("python.exe", "Scripts/labelme.exe")
+        try:
+            if os.path.exists(lm): subprocess.Popen([lm, path])
+            else: subprocess.Popen([sys.executable, "-m", "labelme", path])
+        except FileNotFoundError:
+            subprocess.Popen([sys.executable, "-m", "labelme", path])
 
-    def _tv_save_calib(self):
+    def _tv_read_labelme_calib(self):
+        """读取 labelme 保存的 JSON，提取矩形坐标 → tv_calib.json"""
         d = self.tv_dir.text()
         if not d: return
+        jpgs = sorted([f for f in os.listdir(d)
+                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
+        if not jpgs: return
+        json_path = os.path.join(d, os.path.splitext(jpgs[0])[0] + ".json")
+        if not os.path.exists(json_path):
+            self._log(f"未找到 labelme JSON: {json_path}")
+            self._log("请先在 labelme 中画好矩形并 Ctrl+S 保存后关闭")
+            return
+
+        import json as _json
+        with open(json_path, encoding="utf-8") as f: data = _json.load(f)
+        # 找第一个矩形标注
+        rect = None
+        for s in data.get("shapes", []):
+            if s.get("shape_type") == "rectangle":
+                pts = s["points"]
+                x0 = int(min(pts[0][0], pts[1][0]))
+                y0 = int(min(pts[0][1], pts[1][1]))
+                x1 = int(max(pts[0][0], pts[1][0]))
+                y1 = int(max(pts[0][1], pts[1][1]))
+                rect = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+                break
+
+        if not rect:
+            self._log("labelme JSON 中未找到矩形标注")
+            return
+
         from .module_tv_calib import save_tv_calib
-        save_tv_calib(d, self.tv_x0.value(), self.tv_y0.value(),
-                      self.tv_x1.value(), self.tv_y1.value())
-        self._tv_refresh_calib_ui()
-        self._log("TV 标定已保存: tv_calib.json")
+        save_tv_calib(d, rect["x0"], rect["y0"], rect["x1"], rect["y1"])
+        self.tv_calib_status.setText(
+            f"已标定: x={rect['x0']}~{rect['x1']} "
+            f"({rect['x1']-rect['x0']+1}px)  "
+            f"y={rect['y0']}~{rect['y1']} ({rect['y1']-rect['y0']+1}px)")
+        self._log("TV 标定已从 labelme 矩形标注写入 tv_calib.json")
 
     def _tv_delete_calib(self):
         d = self.tv_dir.text()
         if not d: return
-        import os
         path = os.path.join(d, "tv_calib.json")
         if os.path.exists(path):
             os.remove(path)
@@ -237,24 +270,21 @@ class CoreMapperWindow(QMainWindow):
     def _tv_test_calib(self):
         d = self.tv_dir.text()
         if not d: return
-        from .module_tv_calib import load_tv_calib, crop_tv_image
+        from .module_tv_calib import load_tv_calib
         import cv2
         calib = load_tv_calib(d)
         if not calib:
-            self._log("请先保存 TV 标定"); return
-        jpgs = sorted([f for f in os.listdir(d) if f.lower().endswith(('.jpg','.jpeg','.png'))])
+            self._log("请先完成 TV 标定"); return
+        jpgs = sorted([f for f in os.listdir(d)
+                       if f.lower().endswith(('.jpg','.jpeg','.png'))])
         if not jpgs: return
-        # 在第一张图上画矩形框 + 保存
         img = cv2.imread(os.path.join(d, jpgs[0]))
         if img is None: return
-        cv2.rectangle(img, (calib["x0"], calib["y0"]), (calib["x1"], calib["y1"]), (0,255,0), 2)
+        cv2.rectangle(img, (calib["x0"], calib["y0"]),
+                      (calib["x1"], calib["y1"]), (0, 255, 0), 2)
         out_path = os.path.join(d, "_tv_calib_check.jpg")
         cv2.imwrite(out_path, img)
         self._log(f"边界叠加已保存: {out_path}")
-
-    def _tv_calibrate(self):
-        # 打开 Tab 4 后自动刷新已有标定显示
-        self._tv_refresh_calib_ui()
 
     # ================================================================
     # Tab 5 — TV 特征识别
